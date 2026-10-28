@@ -67,3 +67,16 @@ def test_to_dict_is_json_friendly():
     assert data["total"] == pytest.approx(0.024)
     assert data["model"] == "claude-opus-5-5"
     assert isinstance(data["input_cost"], float)
+
+
+def test_float_prices_work_end_to_end():
+    cost = estimate_cost(ModelPrice("acme", "m", 1.5, 2.0), 1_000_000, 1_000_000)
+    assert cost.total == Decimal("3.5")
+
+
+def test_long_tier_cache_rates_with_free_base_input():
+    price = ModelPrice("acme", "m", 0, 1, long_input_threshold=10, long_input=1, long_output=2)
+    cost = estimate_cost(price, 0, cache_read_tokens=1_000_000, cache_write_tokens=1_000_000)
+    assert cost.long_context is True
+    assert cost.cache_read_cost == Decimal("0.1")
+    assert cost.cache_write_cost == Decimal("1.25")
