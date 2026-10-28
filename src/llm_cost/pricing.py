@@ -24,7 +24,7 @@ def _to_decimal(model: str, name: str, value: object) -> Decimal:
     if isinstance(value, bool) or not isinstance(value, int | float | str | Decimal):
         raise ValueError(f"{model}: '{name}' must be a number")
     try:
-        # str() avoids binary float artefacts such as 0.1 -> 0.1000000000000000055...
+        # str() avoids binary float artefacts (Decimal(0.1) is not exactly 0.1).
         result = value if isinstance(value, Decimal) else Decimal(str(value))
     except ArithmeticError as exc:
         raise ValueError(f"{model}: '{name}' must be a number") from exc
