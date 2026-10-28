@@ -6,7 +6,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 
-from llm_cost.pricing import ModelPrice, get_price
+from llm_cost.pricing import (
+    CACHE_READ_MULTIPLIER,
+    CACHE_WRITE_MULTIPLIER,
+    ModelPrice,
+    get_price,
+)
 
 _MILLION = Decimal(1_000_000)
 
@@ -79,10 +84,15 @@ def estimate_cost(
     )
     if long_context:
         assert price.long_input is not None and price.long_output is not None
-        scale = price.long_input / price.input if price.input else Decimal(1)
+        # Cache prices follow the input price into the long tier.
+        if price.input:
+            scale = price.long_input / price.input
+            cache_read_rate *= scale
+            cache_write_rate *= scale
+        else:
+            cache_read_rate = price.long_input * CACHE_READ_MULTIPLIER
+            cache_write_rate = price.long_input * CACHE_WRITE_MULTIPLIER
         in_rate, out_rate = price.long_input, price.long_output
-        cache_read_rate *= scale
-        cache_write_rate *= scale
 
     return CostBreakdown(
         model=price.model,

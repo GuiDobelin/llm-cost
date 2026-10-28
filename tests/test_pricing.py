@@ -101,3 +101,33 @@ def test_load_prices_rejects_invalid_files(tmp_path, content, message):
     path.write_text(content)
     with pytest.raises(ValueError, match=message):
         load_prices(path)
+
+
+def test_model_price_coerces_numbers_to_decimal():
+    price = ModelPrice("acme", "m", 1.5, 2, cache_read="0.1")
+    assert price.input == Decimal("1.5")
+    assert price.output == Decimal("2")
+    assert price.cache_read == Decimal("0.1")
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"input": -1.0}, "must not be negative"),
+        ({"input": float("inf")}, "finite"),
+        ({"input": True}, "must be a number"),
+        ({"long_input_threshold": -5, "long_input": 1, "long_output": 1}, "non-negative"),
+    ],
+)
+def test_model_price_constructor_validates(kwargs, message):
+    args = {"provider": "acme", "model": "m", "input": 1, "output": 2} | kwargs
+    with pytest.raises(ValueError, match=message):
+        ModelPrice(**args)
+
+
+@pytest.mark.parametrize("provider", [None, 3, ""])
+def test_load_prices_rejects_bad_provider(tmp_path, provider):
+    path = tmp_path / "prices.json"
+    path.write_text(json.dumps({"m": {"provider": provider, "input": 1, "output": 2}}))
+    with pytest.raises(ValueError, match="provider"):
+        load_prices(path)

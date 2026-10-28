@@ -17,12 +17,34 @@ CACHE_READ_MULTIPLIER = Decimal("0.1")
 CACHE_WRITE_MULTIPLIER = Decimal("1.25")  # 5-minute TTL
 
 
+_DECIMAL_FIELDS = ("input", "output", "cache_read", "cache_write", "long_input", "long_output")
+
+
+def _to_decimal(model: str, name: str, value: object) -> Decimal:
+    if isinstance(value, bool) or not isinstance(value, int | float | str | Decimal):
+        raise ValueError(f"{model}: '{name}' must be a number")
+    try:
+        # str() avoids binary float artefacts such as 0.1 -> 0.1000000000000000055...
+        result = value if isinstance(value, Decimal) else Decimal(str(value))
+    except ArithmeticError as exc:
+        raise ValueError(f"{model}: '{name}' must be a number") from exc
+    if not result.is_finite():
+        raise ValueError(f"{model}: '{name}' must be a finite number")
+    if result < 0:
+        raise ValueError(f"{model}: '{name}' must not be negative")
+    return result
+
+
 @dataclass(frozen=True)
 class ModelPrice:
     """Prices for one model, in USD per million tokens.
 
     ``long_input_threshold`` models tiered pricing: when a request's prompt has more
     input tokens than the threshold, the ``long_*`` prices apply to the whole request.
+    Cache prices in that tier are scaled by the same factor as the input price.
+
+    Numeric fields accept ``int``, ``float``, ``str`` or ``Decimal`` and are stored as
+    ``Decimal``.
     """
 
     provider: str
@@ -36,10 +58,17 @@ class ModelPrice:
     long_output: Decimal | None = None
 
     def __post_init__(self) -> None:
-        for f in fields(self):
-            value = getattr(self, f.name)
-            if isinstance(value, Decimal) and value < 0:
-                raise ValueError(f"{self.model}: {f.name} must not be negative")
+        # Accept ints, floats and numeric strings, but store Decimal so cost math is exact.
+        for name in _DECIMAL_FIELDS:
+            value = getattr(self, name)
+            if value is None:
+                continue
+            object.__setattr__(self, name, _to_decimal(self.model, name, value))
+        threshold = self.long_input_threshold
+        if threshold is not None and (
+            isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 0
+        ):
+            raise ValueError(f"{self.model}: long_input_threshold must be a non-negative integer")
         long_fields = (self.long_input_threshold, self.long_input, self.long_output)
         if any(v is not None for v in long_fields) and any(v is None for v in long_fields):
             raise ValueError(
@@ -93,8 +122,6 @@ DEFAULT_PRICES: dict[str, ModelPrice] = {
     ]
 }
 
-_DECIMAL_FIELDS = ("input", "output", "cache_read", "cache_write", "long_input", "long_output")
-
 
 def _parse_entry(model: str, raw: object) -> ModelPrice:
     if not isinstance(raw, Mapping):
@@ -106,26 +133,11 @@ def _parse_entry(model: str, raw: object) -> ModelPrice:
     for required in ("input", "output"):
         if required not in raw:
             raise ValueError(f"{model}: missing required field '{required}'")
-    kwargs: dict[str, object] = {"provider": str(raw.get("provider", "custom"))}
-    for name in _DECIMAL_FIELDS:
-        value = raw.get(name)
-        if value is None:
-            continue
-        if isinstance(value, bool) or not isinstance(value, int | float | str):
-            raise ValueError(f"{model}: '{name}' must be a number")
-        try:
-            # str() avoids binary float artefacts such as 0.1 -> 0.1000000000000000055...
-            kwargs[name] = Decimal(str(value))
-        except ArithmeticError as exc:
-            raise ValueError(f"{model}: '{name}' must be a number") from exc
-        if not kwargs[name].is_finite():  # type: ignore[union-attr]
-            raise ValueError(f"{model}: '{name}' must be a finite number")
-    threshold = raw.get("long_input_threshold")
-    if threshold is not None:
-        if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 0:
-            raise ValueError(f"{model}: 'long_input_threshold' must be a non-negative integer")
-        kwargs["long_input_threshold"] = threshold
-    return ModelPrice(model=model, **kwargs)  # type: ignore[arg-type]
+    provider = raw.get("provider", "custom")
+    if not isinstance(provider, str) or not provider:
+        raise ValueError(f"{model}: 'provider' must be a non-empty string")
+    kwargs = {k: v for k, v in raw.items() if v is not None and k != "provider"}
+    return ModelPrice(model=model, provider=provider, **kwargs)
 
 
 def load_prices(
