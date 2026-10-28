@@ -70,6 +70,9 @@ def test_models_json_and_provider_filter(capsys, tmp_path):
             "output": 2.0,
             "cache_read": 0.1,
             "cache_write": 1.25,
+            "long_input_threshold": None,
+            "long_input": None,
+            "long_output": None,
         }
     ]
 
@@ -209,3 +212,47 @@ def test_compare_text_output(capsys, tty_stdin):
     assert lines[0].split() == ["model", "provider", "input", "output", "total"]
     assert lines[2].startswith("claude-haiku-5-5")
     assert "20,000 input tokens (given)" in out
+
+
+def test_models_shows_long_context_tier(capsys):
+    code, out, _ = run(capsys, "models")
+    assert code == 0
+    assert "claude-haiku-5-5: prompts over 100,000 tokens cost $0.50 input / $2.50 output" in out
+
+
+def test_empty_stdin_is_an_error(capsys, monkeypatch):
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    code, _, err = run(capsys, "estimate")
+    assert code == 1
+    assert "no input" in err
+
+
+def test_undecodable_stdin_is_an_error(capsys, monkeypatch):
+    raw = io.TextIOWrapper(io.BytesIO(b"\xff\xfe"), encoding="utf-8")
+    monkeypatch.setattr("sys.stdin", raw)
+    code, _, err = run(capsys, "estimate")
+    assert code == 1
+    assert "cannot read stdin" in err
+
+
+def test_exact_rejects_non_anthropic_models(capsys, tmp_path, tty_stdin):
+    prices = tmp_path / "p.json"
+    prices.write_text(json.dumps({"x-1": {"provider": "acme", "input": 1, "output": 2}}))
+    client = FakeClient()
+    code, _, err = run(
+        capsys, "estimate", "hi", "--exact", "-m", "x-1", "--prices", str(prices), client=client
+    )
+    assert code == 1
+    assert "only supports Anthropic models" in err
+    assert client.messages.calls == []
+
+
+def test_exact_reports_api_errors(capsys, tty_stdin):
+    class FailingMessages:
+        def count_tokens(self, **kwargs):
+            raise ConnectionError("network unreachable")
+
+    client = SimpleNamespace(messages=FailingMessages())
+    code, _, err = run(capsys, "estimate", "hi", "--exact", client=client)
+    assert code == 1
+    assert "token counting failed: network unreachable" in err
