@@ -1,0 +1,14 @@
+{
+  "my-hosted-model": {
+    "provider": "self-hosted",
+    "input": 0.15,
+    "output": 0.60
+  },
+  "claude-opus-5-5": {
+    "provider": "anthropic",
+    "input": 4,
+    "output": 20,
+    "cache_read": 0.2,
+    "cache_write": 8
+  }
+}
