@@ -135,14 +135,23 @@ def _read_text(args: argparse.Namespace) -> str:
                 return fh.read()
         except (OSError, UnicodeDecodeError) as exc:
             raise CLIError(f"cannot read {args.file}: {exc}") from exc
+    no_input = "no input: pass TEXT, --file, --input-tokens or pipe text into stdin"
     if args.text == "-" or (args.text is None and not sys.stdin.isatty()):
-        return sys.stdin.read()
+        try:
+            text = sys.stdin.read()
+        except UnicodeDecodeError as exc:
+            raise CLIError(f"cannot read stdin: {exc}") from exc
+        if not text and args.text is None:
+            raise CLIError(no_input)
+        return text
     if args.text is None:
-        raise CLIError("no input: pass TEXT, --file, --input-tokens or pipe text into stdin")
+        raise CLIError(no_input)
     return args.text
 
 
-def _input_tokens(args: argparse.Namespace, model: str, client: Any = None) -> tuple[int, str]:
+def _input_tokens(
+    args: argparse.Namespace, price: ModelPrice | None, client: Any = None
+) -> tuple[int, str]:
     """Return the input token count and how it was obtained."""
     if args.input_tokens is not None:
         if getattr(args, "exact", False):
@@ -152,10 +161,15 @@ def _input_tokens(args: argparse.Namespace, model: str, client: Any = None) -> t
         return args.input_tokens, "given"
     text = _read_text(args)
     if getattr(args, "exact", False):
+        if price is None or price.provider != "anthropic":
+            raise CLIError("--exact only supports Anthropic models")
         try:
-            return count_tokens_anthropic(text, model, client=client), "exact"
+            return count_tokens_anthropic(text, price.model, client=client), "exact"
         except RuntimeError as exc:
             raise CLIError(str(exc)) from exc
+        except Exception as exc:
+            # anthropic.APIError and friends: report them without a traceback.
+            raise CLIError(f"token counting failed: {exc}") from exc
     return estimate_tokens(text, args.chars_per_token), "estimated"
 
 
@@ -204,6 +218,9 @@ def _cmd_models(args: argparse.Namespace) -> None:
                 "output": float(p.output),
                 "cache_read": float(p.effective_cache_read),
                 "cache_write": float(p.effective_cache_write),
+                "long_input_threshold": p.long_input_threshold,
+                "long_input": None if p.long_input is None else float(p.long_input),
+                "long_output": None if p.long_output is None else float(p.long_output),
             }
             for p in rows
         ]
@@ -224,13 +241,19 @@ def _cmd_models(args: argparse.Namespace) -> None:
         ],
         right={2, 3, 4, 5},
     )
-    print(f"\n{_prices_note(args.prices)}. Long-context tiers are applied by `estimate`.")
+    print(f"\n{_prices_note(args.prices)}.")
+    for p in rows:
+        if p.long_input_threshold is not None:
+            print(
+                f"{p.model}: prompts over {p.long_input_threshold:,} tokens cost "
+                f"${p.long_input:,.2f} input / ${p.long_output:,.2f} output per 1M."
+            )
 
 
 def _cmd_estimate(args: argparse.Namespace, client: Any = None) -> None:
     table = _load_table(args.prices)
     price = get_price(args.model, table)
-    tokens, source = _input_tokens(args, price.model, client=client)
+    tokens, source = _input_tokens(args, price, client=client)
     cost = estimate_cost(
         price,
         tokens,
@@ -278,7 +301,7 @@ def _print_estimate(
 
 def _cmd_compare(args: argparse.Namespace) -> None:
     rows = _filter(_load_table(args.prices), args.provider)
-    tokens, source = _input_tokens(args, DEFAULT_MODEL)
+    tokens, source = _input_tokens(args, None)
     costs = sorted(
         ((p, estimate_cost(p, tokens, args.output_tokens)) for p in rows),
         key=lambda pc: (pc[1].total, pc[0].model),
